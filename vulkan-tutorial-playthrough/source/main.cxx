@@ -105,7 +105,7 @@ private:
     {
         glfwInit();
         glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
-        glfwWindowHint(GLFW_RESIZABLE, GLFW_FALSE);
+        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
         window = glfwCreateWindow(WIDTH, HEIGHT, "Playthrough", nullptr, nullptr);
     }
 
@@ -355,7 +355,10 @@ private:
         }
         else
         {
-            vk::Extent2D actualExtent = {WIDTH, HEIGHT};
+            int width, height;
+            glfwGetFramebufferSize(window, &width, &height);
+
+            vk::Extent2D actualExtent = {static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
 
             actualExtent.width = std::clamp(actualExtent.width, capabilities.minImageExtent.width, capabilities.maxImageExtent.width);
             actualExtent.height = std::clamp(actualExtent.height, capabilities.minImageExtent.height, capabilities.maxImageExtent.height);
@@ -628,11 +631,16 @@ private:
     {
         vk::Fence fence = inFlightFences[currentFrame];
         device.waitForFences(fence, true, UINT64_MAX);
+        uint32_t imageIndex;
+        try {
+            vk::ResultValue<uint32_t> res = device.acquireNextImageKHR(swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], nullptr);
+        } catch(vk::OutOfDateKHRError e) {
+            recreateSwapChain();
+            return;
+        }
 
-        uint32_t imageIndex = device.acquireNextImageKHR(swapChain, UINT64_MAX, imageAvailableSemaphores[currentFrame], nullptr).value;
-
-
-        if(imagesInFlight[imageIndex]) {
+        if (imagesInFlight[imageIndex])
+        {
             vk::Fence fence = imagesInFlight[imageIndex];
             device.waitForFences(fence, true, UINT64_MAX);
         }
@@ -657,7 +665,14 @@ private:
                 .setSwapchains(swapChain)
                 .setImageIndices(imageIndex);
 
-        vk::Result result = presentQueue.presentKHR(presentInfo);
+        try {
+            vk::Result result = presentQueue.presentKHR(presentInfo);
+            if(result == vk::Result::eSuboptimalKHR) {
+                recreateSwapChain();
+            }
+        } catch(vk::OutOfDateKHRError e) {
+            recreateSwapChain();
+        }
 
         currentFrame = (currentFrame + 1) % MAX_FRAMES_IN_FLIGHT;
     }
@@ -667,31 +682,58 @@ private:
      */
     void cleanup()
     {
+        cleanupSwapChain();
+
         for (const auto &fence : inFlightFences)
             device.destroyFence(fence);
         for (const auto &semaphore : renderFinishedSemaphores)
             device.destroySemaphore(semaphore);
         for (const auto &semaphore : imageAvailableSemaphores)
             device.destroySemaphore(semaphore);
-        device.destroySemaphore(renderFinishedSemaphore);
         device.destroyCommandPool(commandPool);
-        for (const auto &framebuffer : swapChainFramebuffers)
-        {
-            device.destroyFramebuffer(framebuffer);
-        }
-        device.destroyPipeline(graphicsPipeline);
-        device.destroyPipelineLayout(pipelineLayout);
-        device.destroyRenderPass(renderPass);
-        for (const auto &imageView : swapChainImageViews)
-        {
-            device.destroyImageView(imageView);
-        }
-        device.destroySwapchainKHR(swapChain);
         device.destroy();
         instance.destroySurfaceKHR(surface);
         instance.destroy();
         glfwDestroyWindow(window);
         glfwTerminate();
+    }
+
+    void recreateSwapChain()
+    {
+        device.waitIdle();
+
+        cleanupSwapChain();
+
+        createSwapChain();
+        createImageViews();
+        createRenderPass();
+        createGraphicsPipeline();
+        createFramebuffers();
+        createCommandBuffers();
+    }
+
+    void cleanupSwapChain()
+    {
+        for (const auto &framebuffer : swapChainFramebuffers)
+        {
+            device.destroyFramebuffer(framebuffer);
+        }
+        swapChainFramebuffers.clear();
+
+        device.freeCommandBuffers(commandPool, commandBuffers);
+        commandBuffers.clear();
+
+        device.destroyPipeline(graphicsPipeline);
+        device.destroyPipelineLayout(pipelineLayout);
+        device.destroyRenderPass(renderPass);
+
+        for (const auto &imageView : swapChainImageViews)
+        {
+            device.destroyImageView(imageView);
+        }
+        swapChainImageViews.clear();
+
+        device.destroySwapchainKHR(swapChain);
     }
 };
 
